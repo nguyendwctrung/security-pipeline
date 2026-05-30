@@ -4,7 +4,7 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
-from ..domain import AgentResult, Decision, ScanReport
+from ..domain import AgentResult, Decision, ScanReport, ScanSummary
 
 
 class ReportRepository:
@@ -30,14 +30,16 @@ class ReportRepository:
         with path.open("r", encoding="utf-8") as file:
             return json.load(file)
 
-    def read_summary(self, report_path: Optional[Path | str] = None) -> List[ScanReport]:
+    def read_summary(self, report_path: Optional[Path | str] = None) -> ScanSummary:
         path = Path(report_path) if report_path is not None else self.processed_dir / "summary.json"
         data = self._read_json(path)
-        if isinstance(data, list):
-            return [ScanReport.from_dict(item) for item in data if isinstance(item, dict)]
         if isinstance(data, dict):
-            return [ScanReport.from_dict(data)]
-        return []
+            if "reports" in data or "findings" in data:
+                return ScanSummary.from_dict(data)
+            return ScanSummary(reports=[ScanReport.from_dict(data)])
+        if isinstance(data, list):
+            return ScanSummary(reports=[ScanReport.from_dict(item) for item in data if isinstance(item, dict)])
+        return ScanSummary()
 
     def read_agent_outputs(self, report_path: Optional[Path | str] = None) -> List[AgentResult]:
         path = Path(report_path) if report_path is not None else self.processed_dir / "agent_outputs.json"
@@ -55,7 +57,11 @@ class ReportRepository:
             raise ValueError(f"Decision report must be a JSON object: {path}")
         return Decision.from_dict(data)
 
-    def write_summary(self, summary: ScanReport | Iterable[ScanReport], output_dir: Optional[Path | str] = None) -> Path:
+    def write_summary(
+        self,
+        summary: ScanSummary | ScanReport | Iterable[ScanReport],
+        output_dir: Optional[Path | str] = None,
+    ) -> Path:
         return self._write_json(self._serialize_report_collection(summary), self._resolve_output_dir(output_dir) / "summary.json")
 
     def write_agent_outputs(
@@ -73,7 +79,7 @@ class ReportRepository:
 
     def write_all(
         self,
-        summary: ScanReport | Iterable[ScanReport],
+        summary: ScanSummary | ScanReport | Iterable[ScanReport],
         agent_outputs: AgentResult | Iterable[AgentResult],
         decision_report: Decision,
         output_dir: Optional[Path | str] = None,
@@ -100,7 +106,12 @@ class ReportRepository:
         with path.open("r", encoding="utf-8") as file:
             return json.load(file)
 
-    def _serialize_report_collection(self, summary: ScanReport | Iterable[ScanReport]) -> Dict[str, Any] | List[Dict[str, Any]]:
+    def _serialize_report_collection(
+        self,
+        summary: ScanSummary | ScanReport | Iterable[ScanReport],
+    ) -> Dict[str, Any] | List[Dict[str, Any]]:
+        if isinstance(summary, ScanSummary):
+            return summary.to_dict()
         if isinstance(summary, ScanReport):
             return summary.to_dict()
         return [report.to_dict() for report in summary]
