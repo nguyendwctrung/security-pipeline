@@ -2,17 +2,44 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .base_parser import BaseParser, Finding
+from ..domain import ScanReport, ScannerType
+from .base_parser import BaseParser
 
 
 class TrivyParser(BaseParser):
     tool_name = "trivy"
+    scanner_type = ScannerType.TRIVY
 
-    def parse(self, raw_data: Any) -> List[Finding]:
-        findings: List[Finding] = []
+    def parse(self, raw_data: Any) -> ScanReport:
+        findings = []
+        metadata: Dict[str, Any] = {"scan_modes": []}
 
         if not isinstance(raw_data, dict):
-            return findings
+            return self.build_report([], {"raw_type": type(raw_data).__name__})
+
+        if "filesystem" in raw_data or "image" in raw_data:
+            filesystem_data = raw_data.get("filesystem")
+            image_data = raw_data.get("image")
+
+            if isinstance(filesystem_data, dict):
+                findings.extend(self._parse_results(filesystem_data, "filesystem"))
+                metadata["scan_modes"].append("filesystem")
+
+            if isinstance(image_data, dict):
+                if image_data.get("skipped"):
+                    metadata["image_scan"] = image_data
+                else:
+                    findings.extend(self._parse_results(image_data, "image"))
+                    metadata["scan_modes"].append("image")
+
+            return self.build_report(findings, metadata)
+
+        findings.extend(self._parse_results(raw_data, "filesystem"))
+        metadata["scan_modes"].append("filesystem")
+        return self.build_report(findings, metadata)
+
+    def _parse_results(self, raw_data: Dict[str, Any], scan_type: str) -> List:
+        findings = []
 
         results = raw_data.get("Results", [])
         if not isinstance(results, list):
@@ -37,12 +64,18 @@ class TrivyParser(BaseParser):
                     title = str(vul.get("Title") or f"Dependency vulnerability: {rule_id}")
                     description = str(vul.get("Description") or "Dependency vulnerability detected")
                     severity = self.normalize_severity(vul.get("Severity"))
+                    cve = rule_id if rule_id.startswith("CVE-") else None
 
                     remediation = "Apply the vendor patch or upgrade the dependency."
                     if pkg_name and fixed_version:
                         remediation = f"Upgrade {pkg_name} from {installed_version} to {fixed_version}."
 
                     metadata: Dict[str, object] = {
+                        "category": "dependency",
+                        "scan_type": scan_type,
+                        "confidence": "HIGH",
+                        "remediation": remediation,
+                        "references": vul.get("References", []) if isinstance(vul.get("References", []), list) else [],
                         "target": target,
                         "pkg_name": pkg_name,
                         "installed_version": installed_version,
@@ -51,21 +84,16 @@ class TrivyParser(BaseParser):
                         "cvss": vul.get("CVSS"),
                     }
 
-                    finding = Finding(
-                        source_tool=self.tool_name,
+                    finding = self.build_finding(
                         rule_id=rule_id,
                         title=title,
                         description=description,
                         severity=severity,
-                        category="dependency",
                         file_path=target,
-                        line_start=None,
-                        line_end=None,
-                        confidence="HIGH",
-                        remediation=remediation,
-                        references=vul.get("References", []) if isinstance(vul.get("References", []), list) else [],
+                        cve=cve,
+                        package_name=pkg_name or None,
+                        fixed_version=fixed_version or None,
                         metadata=metadata,
-                        fingerprint=self.build_fingerprint(rule_id, target, None, title),
                     )
                     findings.append(finding)
 
@@ -81,27 +109,24 @@ class TrivyParser(BaseParser):
                     severity = self.normalize_severity(mis.get("Severity"))
 
                     metadata = {
+                        "category": "misconfiguration",
+                        "scan_type": scan_type,
+                        "confidence": "MEDIUM",
+                        "remediation": str(mis.get("Resolution") or "Apply the recommended secure configuration."),
+                        "references": mis.get("References", []) if isinstance(mis.get("References", []), list) else [],
                         "target": target,
                         "type": result.get("Type"),
                         "namespace": result.get("Namespace"),
                         "message": mis.get("Message"),
                     }
 
-                    finding = Finding(
-                        source_tool=self.tool_name,
+                    finding = self.build_finding(
                         rule_id=rule_id,
                         title=title,
                         description=description,
                         severity=severity,
-                        category="misconfiguration",
                         file_path=target,
-                        line_start=None,
-                        line_end=None,
-                        confidence="MEDIUM",
-                        remediation=str(mis.get("Resolution") or "Apply the recommended secure configuration."),
-                        references=mis.get("References", []) if isinstance(mis.get("References", []), list) else [],
                         metadata=metadata,
-                        fingerprint=self.build_fingerprint(rule_id, target, None, title),
                     )
                     findings.append(finding)
 
@@ -119,22 +144,24 @@ class TrivyParser(BaseParser):
                     description = str(sec.get("Description") or "Potential secret found by Trivy")
                     severity = self.normalize_severity(sec.get("Severity") or "CRITICAL")
 
-                    finding = Finding(
-                        source_tool=self.tool_name,
+                    finding = self.build_finding(
                         rule_id=rule_id,
                         title=title,
                         description=description,
                         severity=severity,
-                        category="secret",
                         file_path=file_path,
-                        line_start=line_start,
-                        line_end=line_end,
-                        confidence="HIGH",
-                        remediation="Remove the secret from code/history and rotate it immediately.",
-                        references=[],
-                        metadata={"target": target, "match": sec.get("Match")},
-                        fingerprint=self.build_fingerprint(rule_id, file_path, line_start, title),
+                        line=line_start,
+                        metadata={
+                            "category": "secret",
+                            "scan_type": scan_type,
+                            "line_end": line_end,
+                            "confidence": "HIGH",
+                            "remediation": "Remove the secret from code/history and rotate it immediately.",
+                            "references": [],
+                            "target": target,
+                            "match": sec.get("Match"),
+                        },
                     )
                     findings.append(finding)
 
-        return self.deduplicate(findings)
+        return findings

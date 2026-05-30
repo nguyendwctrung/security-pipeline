@@ -2,17 +2,19 @@ from __future__ import annotations
 
 from typing import Any, List
 
-from .base_parser import BaseParser, Finding
+from ..domain import ScanReport, ScannerType, Severity
+from .base_parser import BaseParser
 
 
 class GitleaksParser(BaseParser):
     tool_name = "gitleaks"
+    scanner_type = ScannerType.GITLEAKS
 
-    def parse(self, raw_data: Any) -> List[Finding]:
-        findings: List[Finding] = []
+    def parse(self, raw_data: Any) -> ScanReport:
+        findings = []
 
         if not isinstance(raw_data, list):
-            return findings
+            return self.build_report([], {"raw_type": type(raw_data).__name__})
 
         for item in raw_data:
             if not isinstance(item, dict):
@@ -21,11 +23,8 @@ class GitleaksParser(BaseParser):
             rule_id = str(item.get("RuleID") or "GITLEAKS_GENERIC")
             file_path = str(item.get("File") or "")
             line_start = item.get("StartLine") if isinstance(item.get("StartLine"), int) else None
-            line_end = item.get("EndLine") if isinstance(item.get("EndLine"), int) else None
             title = f"Secret leak: {rule_id}"
             description = str(item.get("Description") or "Potential secret detected")
-            severity = "CRITICAL"
-            confidence = "HIGH"
 
             references = []
             commit = item.get("Commit")
@@ -33,6 +32,11 @@ class GitleaksParser(BaseParser):
                 references.append(f"commit:{commit}")
 
             metadata = {
+                "category": "secret",
+                "line_end": item.get("EndLine") if isinstance(item.get("EndLine"), int) else None,
+                "confidence": "HIGH",
+                "remediation": "Remove the secret, rotate credentials, and move secrets to a secret manager.",
+                "references": references,
                 "match": item.get("Match"),
                 "secret_length": len(str(item.get("Secret", ""))) if item.get("Secret") else 0,
                 "entropy": item.get("Entropy"),
@@ -41,22 +45,15 @@ class GitleaksParser(BaseParser):
                 "date": item.get("Date"),
             }
 
-            finding = Finding(
-                source_tool=self.tool_name,
+            finding = self.build_finding(
                 rule_id=rule_id,
                 title=title,
                 description=description,
-                severity=severity,
-                category="secret",
+                severity=Severity.CRITICAL,
                 file_path=file_path,
-                line_start=line_start,
-                line_end=line_end,
-                confidence=confidence,
-                remediation="Remove the secret, rotate credentials, and move secrets to a secret manager.",
-                references=references,
+                line=line_start,
                 metadata=metadata,
-                fingerprint=self.build_fingerprint(rule_id, file_path, line_start, title),
             )
             findings.append(finding)
 
-        return self.deduplicate(findings)
+        return self.build_report(findings, {"raw_entries": len(raw_data)})

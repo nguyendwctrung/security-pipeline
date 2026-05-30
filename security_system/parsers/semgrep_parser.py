@@ -2,21 +2,23 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from .base_parser import BaseParser, Finding
+from ..domain import ScanReport, ScannerType
+from .base_parser import BaseParser
 
 
 class SemgrepParser(BaseParser):
     tool_name = "semgrep"
+    scanner_type = ScannerType.SEMGREP
 
-    def parse(self, raw_data: Any) -> List[Finding]:
-        findings: List[Finding] = []
+    def parse(self, raw_data: Any) -> ScanReport:
+        findings = []
 
         if not isinstance(raw_data, dict):
-            return findings
+            return self.build_report([], {"raw_type": type(raw_data).__name__})
 
         results = raw_data.get("results", [])
         if not isinstance(results, list):
-            return findings
+            return self.build_report([], {"raw_type": type(raw_data).__name__, "results_type": type(results).__name__})
 
         for item in results:
             if not isinstance(item, dict):
@@ -30,7 +32,6 @@ class SemgrepParser(BaseParser):
             rule_id = str(item.get("check_id") or "SEMGREP_GENERIC")
             file_path = str(item.get("path") or "")
             line_start = start.get("line") if isinstance(start, dict) and isinstance(start.get("line"), int) else None
-            line_end = end.get("line") if isinstance(end, dict) and isinstance(end.get("line"), int) else None
             title = str(extra.get("message") or f"Semgrep rule violation: {rule_id}")
             description = str(extra.get("message") or "Code pattern matched a security rule")
             severity = self.normalize_severity(extra.get("severity"))
@@ -46,28 +47,32 @@ class SemgrepParser(BaseParser):
                 remediation = str(extra.get("fix"))
 
             metadata: Dict[str, object] = {
+                "category": str(metadata_block.get("category", "code")) if isinstance(metadata_block, dict) else "code",
+                "line_end": end.get("line") if isinstance(end, dict) and isinstance(end.get("line"), int) else None,
+                "confidence": confidence,
+                "remediation": remediation,
+                "references": references,
                 "engine_kind": item.get("engine_kind"),
                 "lines": item.get("lines"),
                 "validation_state": item.get("validation_state"),
                 "metadata": metadata_block,
             }
 
-            finding = Finding(
-                source_tool=self.tool_name,
+            finding = self.build_finding(
                 rule_id=rule_id,
                 title=title,
                 description=description,
                 severity=severity,
-                category=str(metadata_block.get("category", "code")) if isinstance(metadata_block, dict) else "code",
                 file_path=file_path,
-                line_start=line_start,
-                line_end=line_end,
-                confidence=confidence,
-                remediation=remediation,
-                references=references,
+                line=line_start,
                 metadata=metadata,
-                fingerprint=self.build_fingerprint(rule_id, file_path, line_start, title),
             )
             findings.append(finding)
 
-        return self.deduplicate(findings)
+        return self.build_report(
+            findings,
+            {
+                "raw_results": len(results),
+                "errors": raw_data.get("errors", []) if isinstance(raw_data.get("errors"), list) else [],
+            },
+        )
