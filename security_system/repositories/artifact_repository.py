@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from ..domain import GitContext
+
 
 class ArtifactRepository:
 	"""Repository for writing non-summary artifacts used by PR reporting and AI context."""
@@ -25,21 +27,28 @@ class ArtifactRepository:
 	def write_git_diff(self, git_diff: str, output_dir: Optional[Path | str] = None) -> Path:
 		return self._write_text(git_diff, self._resolve_output_dir(output_dir) / "git_diff.txt")
 
-	def write_git_context(self, git_context: Dict[str, Any], output_dir: Optional[Path | str] = None) -> Path:
-		return self._write_json(git_context, self._resolve_output_dir(output_dir) / "git_context.json")
+	def read_git_context(self, artifact_path: Optional[Path | str] = None) -> GitContext:
+		path = Path(artifact_path) if artifact_path is not None else self.processed_dir / "git_context.json"
+		data = self._read_json(path)
+		if not isinstance(data, dict):
+			raise ValueError(f"Git context must be a JSON object: {path}")
+		return GitContext.from_dict(data)
+
+	def write_git_context(self, git_context: GitContext, output_dir: Optional[Path | str] = None) -> Path:
+		return self._write_json(git_context.to_dict(), self._resolve_output_dir(output_dir) / "git_context.json")
 
 	def write_all(
 		self,
 		pr_comment: str,
 		git_diff: str,
-		git_context: Dict[str, Any],
+		git_context: GitContext,
 		output_dir: Optional[Path | str] = None,
 	) -> Dict[str, Path]:
 		target_dir = self._resolve_output_dir(output_dir)
 		return {
 			"pr_comment": self._write_text(pr_comment, target_dir / "pr_comment.md"),
 			"git_diff": self._write_text(git_diff, target_dir / "git_diff.txt"),
-			"git_context": self._write_json(git_context, target_dir / "git_context.json"),
+			"git_context": self._write_json(git_context.to_dict(), target_dir / "git_context.json"),
 		}
 
 	def _resolve_output_dir(self, output_dir: Optional[Path | str]) -> Path:
@@ -58,3 +67,7 @@ class ArtifactRepository:
 		with target_path.open("w", encoding="utf-8") as file:
 			json.dump(payload, file, indent=2, ensure_ascii=False)
 		return target_path
+
+	def _read_json(self, path: Path) -> Any:
+		with path.open("r", encoding="utf-8") as file:
+			return json.load(file)
