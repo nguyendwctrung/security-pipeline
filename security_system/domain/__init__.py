@@ -4,6 +4,7 @@ from .enums import DecisionStatus, RiskLevel, ScannerType, Severity, Status
 from .finding import Finding
 from .git_context import GitContext
 from .scan_report import ScanReport
+from .scan_summary import ScanSummary
 
 __all__ = [
 	"AgentResult",
@@ -13,6 +14,7 @@ __all__ = [
 	"GitContext",
 	"RiskLevel",
 	"ScanReport",
+	"ScanSummary",
 	"ScannerType",
 	"Severity",
 	"Status",
