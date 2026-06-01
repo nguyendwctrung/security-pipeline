@@ -126,7 +126,10 @@ class SecurityCrewManager:
 		# The deterministic agent analyze() path below remains the source of truth for typed outputs.
 		tasks = self.create_tasks(findings, resolved_git_context)
 		if tasks:
-			self._run_crewai(tasks)
+			try:
+				self._run_crewai(tasks)
+			except Exception:				
+				pass
 
 		agent_outputs = self._run_agents_in_order(findings, resolved_git_context)
 		aggregated_result = self.agents["risk_aggregator_agent"].analyze(agent_outputs)
