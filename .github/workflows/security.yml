@@ -3,10 +3,12 @@ name: Security scan
 on:
   workflow_dispatch:
 
-  workflow_run:
-    workflows: ["CI"]
-    types:
-      - completed
+  push:
+    branches:
+      - main
+      - dev
+
+  pull_request:
     branches:
       - main
       - dev
@@ -16,14 +18,11 @@ permissions:
 
 jobs:
   security-scan:
-    if: ${{ github.event.workflow_run.conclusion == 'success' }}
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          ref: ${{ github.event.workflow_run.head_sha }}
 
       - name: Setup Python
         uses: actions/setup-python@v5
