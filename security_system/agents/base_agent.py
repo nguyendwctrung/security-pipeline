@@ -71,11 +71,32 @@ class BaseSecurityAgent(ABC):
 			role=self.role,
 			goal=self.goal,
 			backstory=self.backstory,
-			tools=self.tools,
+			tools=self._resolve_crewai_tools(),
 			llm=self.llm_model,
 			verbose=self.config.verbose,
 			allow_delegation=self.config.allow_delegation,
 		)
+
+	def _resolve_crewai_tools(self) -> List[Any]:
+		"""Filter configured tools down to CrewAI-compatible tool objects."""
+
+		resolved: List[Any] = []
+		for tool in self.tools:
+			if tool is None:
+				continue
+			if isinstance(tool, dict):
+				resolved.append(tool)
+				continue
+
+			has_tool_shape = (
+				hasattr(tool, "name")
+				and hasattr(tool, "description")
+				and (hasattr(tool, "run") or hasattr(tool, "_run"))
+			)
+			if has_tool_shape:
+				resolved.append(tool)
+
+		return resolved
 
 	def build_task_description(self, input_payload: Optional[Dict[str, Any]] = None) -> str:
 		"""Build a CrewAI task description from shared prompt and optional JSON payload."""

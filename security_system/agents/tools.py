@@ -21,11 +21,11 @@ class ReadOnlySecurityTools:
 
 	@property
 	def processed_dir(self) -> Path:
-		return self.reports_base_dir / "artifacts" / "processed"
+		return self.reports_base_dir
 
 	@property
 	def raw_dir(self) -> Path:
-		return self.reports_base_dir / "artifacts" / "raw"
+		return self.reports_base_dir
 
 	def read_summary_json(self, path: Optional[Path | str] = None) -> Dict[str, Any]:
 		"""Read summary JSON from processed artifacts."""
@@ -55,19 +55,19 @@ class ReadOnlySecurityTools:
 		"""Read raw gitleaks report JSON."""
 
 		target = Path(path) if path is not None else self.raw_dir / "gitleaks_report.json"
-		return self._read_allowed_raw_report(target, "gitleaks_report.json")
+		return self._read_allowed_raw_report(target)
 
 	def read_semgrep_report_json(self, path: Optional[Path | str] = None) -> Any:
 		"""Read raw semgrep report JSON."""
 
 		target = Path(path) if path is not None else self.raw_dir / "semgrep_report.json"
-		return self._read_allowed_raw_report(target, "semgrep_report.json")
+		return self._read_allowed_raw_report(target)
 
 	def read_trivy_report_json(self, path: Optional[Path | str] = None) -> Any:
 		"""Read raw trivy report JSON."""
 
 		target = Path(path) if path is not None else self.raw_dir / "trivy_report.json"
-		return self._read_allowed_raw_report(target, "trivy_report.json")
+		return self._read_allowed_raw_report(target)
 
 	def read_raw_report_json(self, report_filename: str) -> Any:
 		"""Read one of the allowlisted raw scanner reports."""
@@ -88,9 +88,9 @@ class ReadOnlySecurityTools:
 	def refactor_code(self, *_args: Any, **_kwargs: Any) -> None:
 		raise PermissionError("Code refactoring is disabled for read-only security tools.")
 
-	def _read_allowed_raw_report(self, target: Path, expected_name: str) -> Any:
-		if target.name != expected_name:
-			raise PermissionError(f"Raw report access is restricted to {expected_name}.")
+	def _read_allowed_raw_report(self, target: Path) -> Any:
+		if target.name not in self._ALLOWED_RAW_REPORTS:
+			raise PermissionError("Raw report access is restricted to allowlisted scanner report names.")
 		return self._read_json_file(target)
 
 	def _read_json_file(self, path: Path) -> Any:

@@ -15,11 +15,11 @@ class ArtifactRepository:
 
 	@property
 	def artifacts_dir(self) -> Path:
-		return self.base_dir / "artifacts"
+		return self.base_dir
 
 	@property
 	def processed_dir(self) -> Path:
-		return self.artifacts_dir / "processed"
+		return self.base_dir
 
 	def write_pr_comment(self, pr_comment: str, output_dir: Optional[Path | str] = None) -> Path:
 		return self._write_text(pr_comment, self._resolve_output_dir(output_dir) / "pr_comment.md")

@@ -15,15 +15,15 @@ class ReportRepository:
 
     @property
     def artifacts_dir(self) -> Path:
-        return self.base_dir / "artifacts"
+        return self.base_dir
 
     @property
     def raw_dir(self) -> Path:
-        return self.artifacts_dir / "raw"
+        return self.base_dir
 
     @property
     def processed_dir(self) -> Path:
-        return self.artifacts_dir / "processed"
+        return self.base_dir
 
     def read_raw_report_json(self, report_path: Path | str) -> Any:
         path = Path(report_path)

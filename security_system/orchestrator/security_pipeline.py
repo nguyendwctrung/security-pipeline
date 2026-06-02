@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import shutil
 from typing import Optional
 
 from ..domain import Decision, DecisionStatus, ScanSummary
@@ -71,6 +72,7 @@ class SecurityPipeline:
 
 		# 2) run security scanners
 		scan_result = self.scan_service.run_all_with_result(target_path=target_path, image_name=image_name)
+		self._publish_raw_reports(scan_result)
 
 		# 3+4) parse raw reports and create summary.json
 		summary = self.report_service.build_summary(scan_result.report_paths, output_dir=processed_dir)
@@ -98,8 +100,13 @@ class SecurityPipeline:
 		)
 
 		# 9) create pr_comment.md
-		pr_comment = self._build_pr_comment(decision_result.decision)
-		pr_comment_path = str(self.artifact_repository.write_pr_comment(pr_comment, output_dir=processed_dir))
+		pr_comment_path = str(
+			self.report_service.create_pr_comment_from_decision_report(
+				decision_report_path=decision_result.decision_report_path,
+				summary_path=summary_path,
+				output_dir=processed_dir,
+			)
+		)
 
 		# 10) return final status PASS/WARN/FAIL
 		return SecurityPipelineResult(
@@ -120,37 +127,53 @@ class SecurityPipeline:
 		"""Step 1: ensure reports directories exist before any workflow stage runs."""
 
 		self.reports_root.mkdir(parents=True, exist_ok=True)
-		self.report_repository.artifacts_dir.mkdir(parents=True, exist_ok=True)
 		self.report_repository.raw_dir.mkdir(parents=True, exist_ok=True)
+
+		legacy_artifacts_dir = self.reports_root / "artifacts"
+		if legacy_artifacts_dir.exists() and legacy_artifacts_dir.is_dir():
+			shutil.rmtree(legacy_artifacts_dir)
 
 		processed_dir = Path(output_dir) if output_dir is not None else self.report_repository.processed_dir
 		processed_dir.mkdir(parents=True, exist_ok=True)
+
+		for stale_name in ("gitleaks-report.json", "semgrep-report.json", "trivy-report.json"):
+			stale_path = self.reports_root / stale_name
+			if stale_path.exists() and stale_path.is_file():
+				stale_path.unlink()
+
 		return processed_dir
 
-	def _build_pr_comment(self, decision: Decision) -> str:
-		lines = [
-			"## Security Pipeline Result",
-			"",
-			f"- Status: **{decision.status.value}**",
-			f"- Final score: {decision.final_score:.2f}",
-		]
+	def _publish_raw_reports(self, scan_result: ScanServiceResult) -> None:
+		"""Publish underscore-named raw scanner reports in reports root for CI/local consumers."""
 
-		if decision.blocking_reasons:
-			lines.append("")
-			lines.append("### Blocking Reasons")
-			for reason in decision.blocking_reasons:
-				lines.append(f"- {reason}")
+		expected = {
+			"gitleaks": "gitleaks_report.json",
+			"semgrep": "semgrep_report.json",
+			"trivy": "trivy_report.json",
+		}
+		written: set[str] = set()
 
-		if decision.warnings:
-			lines.append("")
-			lines.append("### Warnings")
-			for warning in decision.warnings:
-				lines.append(f"- {warning}")
+		for report_path in scan_result.report_paths:
+			target_name = report_path.name
+			for key, canonical_name in expected.items():
+				if key in report_path.name.lower():
+					target_name = canonical_name
+					written.add(key)
+					break
 
-		if decision.recommendations:
-			lines.append("")
-			lines.append("### Recommendations")
-			for recommendation in decision.recommendations:
-				lines.append(f"- {recommendation}")
+			target_path = self.reports_root / target_name
+			if report_path.resolve() == target_path.resolve():
+				continue
+			target_path.write_bytes(report_path.read_bytes())
 
-		return "\n".join(lines) + "\n"
+		for key, target_name in expected.items():
+			if key in written:
+				continue
+			fallback_source = self.report_repository.raw_dir / target_name
+			target_path = self.reports_root / target_name
+			if fallback_source.exists():
+				if fallback_source.resolve() != target_path.resolve():
+					target_path.write_bytes(fallback_source.read_bytes())
+			elif not target_path.exists():
+				target_path.write_text("{}\n", encoding="utf-8")
+
