@@ -1,0 +1,91 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+
+  pull_request:
+    branches:
+      - main
+      - dev
+
+  workflow_dispatch:
+
+jobs:
+  client-ci:
+    name: Client CI
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: PokeMap/src/client
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: PokeMap/src/client/package-lock.json
+
+      - name: Install client dependencies
+        run: npm ci
+
+      - name: Run client lint
+        run: npm run lint --if-present
+
+      - name: Run client tests
+        shell: bash
+        run: |
+          TEST_SCRIPT=$(node -p "require('./package.json').scripts?.test || ''")
+          if [[ -z "$TEST_SCRIPT" || "$TEST_SCRIPT" == *"no test specified"* ]]; then
+            echo "No real client test script found. Skipping tests."
+            exit 0
+          fi
+          npm test -- --watchAll=false
+
+      - name: Build client
+        run: npm run build --if-present
+
+  server-ci:
+    name: Server CI
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: PokeMap/src/server
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: PokeMap/src/server/package-lock.json
+
+      - name: Install server dependencies
+        run: npm ci
+
+      - name: Run server lint
+        run: npm run lint --if-present
+
+      - name: Run server tests
+        shell: bash
+        run: |
+          TEST_SCRIPT=$(node -p "require('./package.json').scripts?.test || ''")
+          if [[ -z "$TEST_SCRIPT" || "$TEST_SCRIPT" == *"no test specified"* ]]; then
+            echo "No real server test script found. Skipping tests."
+            exit 0
+          fi
+          npm test
+
+      - name: Build server
+        run: npm run build --if-present
