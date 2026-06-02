@@ -1,9 +1,16 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from copy import deepcopy
 from typing import Any, Dict, List, Sequence
 
-from ..domain import AgentResult, Decision, DecisionStatus, Finding, ScanSummary, Severity
+from ..domain import AgentResult, Decision, DecisionStatus, Finding, GitContext, ScanSummary, Severity
+from ..repositories.policy_repository import PolicyRepository
+from .rules.base_rule import BaseRule, RuleResult
+from .rules.malicious_intent_rule import MaliciousIntentRule
+from .rules.secret_rule import SecretRule
+from .rules.semgrep_rule import SemgrepRule
+from .rules.trivy_rule import TrivyRule
 
 
 @dataclass(slots=True)
@@ -12,56 +19,48 @@ class PolicyEvaluationContext:
 
 	summary: ScanSummary
 	agent_outputs: List[AgentResult]
+	git_context: GitContext | None
 	security_policy: Dict[str, Any]
 	allowlist: Dict[str, Any]
 	baseline: Dict[str, Any]
 
 
 class PolicyEngine:
-	"""Simple policy engine that converts findings + agent risk into PASS/WARN/FAIL."""
+	"""Rule-driven policy engine that converts rule results into PASS/WARN/FAIL."""
 
-	DEFAULT_RULES: Dict[str, Any] = {
-		"fail_on_critical": True,
-		"fail_on_high_count": 2,
-		"warn_on_high_count": 1,
-		"warn_on_medium_count": 3,
-		"fail_on_real_secret": True,
-	}
+	def __init__(
+		self,
+		policy_repository: PolicyRepository | None = None,
+		rules: Sequence[BaseRule] | None = None,
+	) -> None:
+		self.policy_repository = policy_repository or PolicyRepository()
+		self.rules: List[BaseRule] = list(rules) if rules is not None else self._default_rules()
 
 	def evaluate(self, context: PolicyEvaluationContext) -> Decision:
-		rules = self._effective_rules(context.security_policy)
-		findings = self._apply_allowlist(context.summary.findings, context.allowlist)
-		severity_counts = self._severity_counts(findings)
+		loaded = self._load_policy_bundle()
+		security_policy = self._merge_policy_dicts(loaded.get("security_policy", {}), context.security_policy)
+		allowlist = self._merge_policy_dicts(loaded.get("allowlist", {}), context.allowlist)
+		baseline = self._merge_policy_dicts(loaded.get("baseline", {}), context.baseline)
 
-		blocking_reasons: List[str] = []
-		warnings: List[str] = []
-		recommendations: List[str] = self._merge_recommendations(context.agent_outputs)
+		summary = self._prepare_summary_for_rules(context.summary, security_policy)
+		findings = self._annotate_findings_for_policy(summary.findings, allowlist, baseline)
+		git_context = context.git_context or self._empty_git_context(summary)
 
-		if rules["fail_on_critical"] and severity_counts[Severity.CRITICAL.value] > 0:
-			blocking_reasons.append(
-				f"Critical findings detected: {severity_counts[Severity.CRITICAL.value]}."
-			)
+		rule_results = self._run_rules(
+			summary=summary,
+			findings=findings,
+			git_context=git_context,
+			agent_outputs=context.agent_outputs,
+		)
 
-		if severity_counts[Severity.HIGH.value] >= int(rules["fail_on_high_count"]):
-			blocking_reasons.append(
-				f"High findings exceed fail threshold: {severity_counts[Severity.HIGH.value]} >= {int(rules['fail_on_high_count'])}."
-			)
-
-		if rules["fail_on_real_secret"] and self._has_real_secret(findings):
-			blocking_reasons.append("At least one likely real secret exposure is present.")
-
-		if severity_counts[Severity.HIGH.value] >= int(rules["warn_on_high_count"]):
-			warnings.append(
-				f"High findings exceed warning threshold: {severity_counts[Severity.HIGH.value]} >= {int(rules['warn_on_high_count'])}."
-			)
-
-		if severity_counts[Severity.MEDIUM.value] >= int(rules["warn_on_medium_count"]):
-			warnings.append(
-				f"Medium findings exceed warning threshold: {severity_counts[Severity.MEDIUM.value]} >= {int(rules['warn_on_medium_count'])}."
-			)
+		blocking_reasons = [result.reason for result in rule_results if result.blocking or result.status == DecisionStatus.FAIL]
+		warnings = [result.reason for result in rule_results if result.status == DecisionStatus.WARN]
+		recommendations = self._merge_recommendations(context.agent_outputs, rule_results)
 
 		final_score = self._final_score(findings, context.agent_outputs)
 
+		# Decision policy requested by user:
+		# blocking rules => FAIL, warning rules => WARN, no issue => PASS.
 		if blocking_reasons:
 			status = DecisionStatus.FAIL
 		elif warnings:
@@ -82,44 +81,121 @@ class PolicyEngine:
 			final_score=round(final_score, 2),
 		)
 
-	def _effective_rules(self, security_policy: Dict[str, Any]) -> Dict[str, Any]:
-		rules_raw = security_policy.get("rules")
-		policy_rules: Dict[str, Any] = rules_raw if isinstance(rules_raw, dict) else {}
-		effective = dict(self.DEFAULT_RULES)
-		for key in self.DEFAULT_RULES:
-			if key in policy_rules:
-				effective[key] = policy_rules[key]
-		return effective
+	def _load_policy_bundle(self) -> Dict[str, Dict[str, Any]]:
+		try:
+			return self.policy_repository.read_all()
+		except Exception:
+			return {
+				"security_policy": {},
+				"allowlist": {},
+				"baseline": {},
+			}
 
-	def _apply_allowlist(self, findings: Sequence[Finding], allowlist: Dict[str, Any]) -> List[Finding]:
-		ids = {str(item) for item in self._list_value(allowlist, "finding_ids")}
-		rules = {str(item).lower() for item in self._list_value(allowlist, "rule_ids")}
-		cves = {str(item).upper() for item in self._list_value(allowlist, "cves")}
+	def _default_rules(self) -> List[BaseRule]:
+		return [
+			SecretRule(),
+			SemgrepRule(),
+			TrivyRule(),
+			MaliciousIntentRule(),
+		]
 
-		filtered: List[Finding] = []
-		for finding in findings:
-			if finding.id in ids:
-				continue
-			if finding.rule_id and finding.rule_id.lower() in rules:
-				continue
-			if finding.cve and finding.cve.upper() in cves:
-				continue
-			filtered.append(finding)
-		return filtered
+	def _run_rules(
+		self,
+		summary: ScanSummary,
+		findings: Sequence[Finding],
+		git_context: GitContext,
+		agent_outputs: Sequence[AgentResult],
+	) -> List[RuleResult]:
+		results: List[RuleResult] = []
+		for rule in self.rules:
+			try:
+				result = rule.evaluate(summary, findings, agent_outputs, git_context)
+			except Exception as exc:
+				result = rule.warn_result(
+					reason=f"Rule execution error in {rule.__class__.__name__}: {exc}",
+					severity=Severity.MEDIUM,
+					metadata={"rule": rule.__class__.__name__},
+				)
+			results.append(result)
+		return results
 
-	def _severity_counts(self, findings: Sequence[Finding]) -> Dict[str, int]:
-		counts = {severity.value: 0 for severity in Severity}
-		for finding in findings:
-			counts[finding.severity.value] = counts.get(finding.severity.value, 0) + 1
-		return counts
+	def _prepare_summary_for_rules(self, summary: ScanSummary, security_policy: Dict[str, Any]) -> ScanSummary:
+		prepared = deepcopy(summary)
+		prepared.metadata["security_policy"] = security_policy
 
-	def _has_real_secret(self, findings: Sequence[Finding]) -> bool:
-		for finding in findings:
-			category = str(finding.metadata.get("category") or "").lower()
-			classification = str(finding.metadata.get("secret_classification") or "").lower()
-			if category == "secret" and classification in {"", "real"}:
-				return True
-		return False
+		rules_cfg = security_policy.get("rules") if isinstance(security_policy.get("rules"), dict) else {}
+		if isinstance(rules_cfg, dict):
+			if "allow_dev_test_dependencies" in rules_cfg:
+				prepared.metadata["policy_allow_dev_test_dependencies"] = bool(rules_cfg["allow_dev_test_dependencies"])
+			if "allow_dev_dependencies" in rules_cfg:
+				prepared.metadata["policy_allow_dev_dependencies"] = bool(rules_cfg["allow_dev_dependencies"])
+			if "allow_test_dependencies" in rules_cfg:
+				prepared.metadata["policy_allow_test_dependencies"] = bool(rules_cfg["allow_test_dependencies"])
+
+		return prepared
+
+	def _annotate_findings_for_policy(
+		self,
+		findings: Sequence[Finding],
+		allowlist: Dict[str, Any],
+		baseline: Dict[str, Any],
+	) -> List[Finding]:
+		allowlist_ids = {str(item) for item in self._list_value(allowlist, "finding_ids")}
+		allowlist_rules = {str(item).lower() for item in self._list_value(allowlist, "rule_ids")}
+		allowlist_cves = {str(item).upper() for item in self._list_value(allowlist, "cves")}
+
+		baseline_ids = {str(item) for item in self._list_value(baseline, "finding_ids")}
+		baseline_rules = {str(item).lower() for item in self._list_value(baseline, "rule_ids")}
+		baseline_cves = {str(item).upper() for item in self._list_value(baseline, "cves")}
+
+		annotated = deepcopy(list(findings))
+		for finding in annotated:
+			in_allowlist = (
+				finding.id in allowlist_ids
+				or (finding.rule_id is not None and finding.rule_id.lower() in allowlist_rules)
+				or (finding.cve is not None and finding.cve.upper() in allowlist_cves)
+			)
+			in_baseline = (
+				finding.id in baseline_ids
+				or (finding.rule_id is not None and finding.rule_id.lower() in baseline_rules)
+				or (finding.cve is not None and finding.cve.upper() in baseline_cves)
+			)
+
+			if in_allowlist:
+				finding.metadata["allowlisted"] = True
+				finding.metadata["allowlist_hit"] = True
+			if in_baseline:
+				finding.metadata["in_baseline"] = True
+				finding.metadata["baseline_hit"] = True
+
+		return annotated
+
+	def _empty_git_context(self, summary: ScanSummary):
+		from ..domain import GitContext
+		from datetime import datetime
+
+		context_payload = summary.metadata.get("git_context")
+		if isinstance(context_payload, dict):
+			try:
+				return GitContext.from_dict(context_payload)
+			except Exception:
+				pass
+
+		return GitContext(
+			commit_hash="",
+			branch="",
+			author="",
+			timestamp=datetime.utcnow(),
+			commit_message="",
+			changed_files=[],
+			diff="",
+		)
+
+	def _merge_policy_dicts(self, loaded: Dict[str, Any], provided: Dict[str, Any]) -> Dict[str, Any]:
+		result: Dict[str, Any] = dict(loaded or {})
+		for key, value in (provided or {}).items():
+			result[key] = value
+		return result
 
 	def _final_score(self, findings: Sequence[Finding], agent_outputs: Sequence[AgentResult]) -> float:
 		if not findings and not agent_outputs:
@@ -147,7 +223,7 @@ class PolicyEngine:
 		combined = (severity_component * 0.6) + (agent_component * 0.4)
 		return max(0.0, min(100.0, combined))
 
-	def _merge_recommendations(self, agent_outputs: Sequence[AgentResult]) -> List[str]:
+	def _merge_recommendations(self, agent_outputs: Sequence[AgentResult], rule_results: Sequence[RuleResult]) -> List[str]:
 		ordered: List[str] = []
 		seen = set()
 		for output in agent_outputs:
@@ -156,6 +232,16 @@ class PolicyEngine:
 					continue
 				seen.add(recommendation)
 				ordered.append(recommendation)
+		for result in rule_results:
+			raw_recommendations = result.metadata.get("recommendations")
+			if not isinstance(raw_recommendations, list):
+				continue
+			for recommendation in raw_recommendations:
+				rec = str(recommendation)
+				if rec in seen:
+					continue
+				seen.add(rec)
+				ordered.append(rec)
 		return ordered
 
 	def _list_value(self, data: Dict[str, Any], key: str) -> List[Any]:
