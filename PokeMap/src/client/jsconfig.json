@@ -9,9 +9,9 @@
     "checkJs": false,
     "exactOptionalPropertyTypes": false,
     "resolveJsonModule": true,
-    "module": "esnext",   
+    "module": "esnext",
     "moduleResolution": "bundler",
-    
+    "ignoreDeprecations": "6.0"
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "dist"]
