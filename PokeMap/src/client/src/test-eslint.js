@@ -1,9 +1,11 @@
-// Test file to check if ESLint is working
-function testFunction() {
-    console.log(undefinedVariable); // This should show an error
-    const unusedVar = "test"; // This should show a warning
-    
-    return someUndefinedFunction(); // This should show an error
+function formatTestValue(value) {
+  return String(value).trim().toUpperCase();
 }
 
-export default testFunction;    
+function testFunction() {
+  const input = "test";
+  const formatted = formatTestValue(input);
+  return formatted;
+}
+
+export default testFunction;
