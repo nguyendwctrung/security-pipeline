@@ -41,3 +41,30 @@ jobs:
 
       - name: Run security pipeline
         run: python -m security_system.main
+
+      - name: Print security reports
+        if: always()
+        shell: bash
+        run: |
+          echo "=== Security reports directory ==="
+          ls -la security_system/reports || true
+
+          echo "=== decision_report.json ==="
+          cat security_system/reports/decision_report.json || true
+
+          echo "=== summary.json ==="
+          cat security_system/reports/summary.json || true
+
+          echo "=== agent_outputs.json ==="
+          cat security_system/reports/agent_outputs.json || true
+
+          echo "=== pr_comment.md ==="
+          cat security_system/reports/pr_comment.md || true
+
+      - name: Upload security artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-reports
+          path: security_system/reports
+          if-no-files-found: warn

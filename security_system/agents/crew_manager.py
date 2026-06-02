@@ -175,6 +175,39 @@ class SecurityCrewManager:
 		outputs: List[AgentResult] = []
 		for name in ordered_names:
 			agent = self.agents[name]
-			outputs.append(agent.analyze(findings, git_context))
+			try:
+				outputs.append(agent.analyze(findings, git_context))
+			except Exception as exc:
+				outputs.append(self._safe_fallback_agent_output(name, str(exc)))
 		return outputs
+
+	def _safe_fallback_agent_output(self, agent_name: str, error_message: str) -> AgentResult:
+		"""Return non-blocking fallback output when an agent cannot produce a valid analysis."""
+
+		error_preview = (error_message or "unknown error")[:200]
+		is_malicious_agent = agent_name == "malicious_intent_agent"
+		summary = (
+			"Fallback output: malicious_intent_agent parse/runtime error. "
+			f"Using safe default (is_malicious=false, confidence=low, risk_score=0, evidence=[]). Details: {error_preview}"
+			if is_malicious_agent
+			else f"Fallback output: {agent_name} parse/runtime error. Details: {error_preview}"
+		)
+
+		return AgentResult(
+			agent_name=agent_name,
+			risk_score=0.0,
+			risk_level=self._coerce_risk_level_none(),
+			findings=[],
+			recommendations=[
+				"Agent output parse error encountered; proceed with scanner-based policy checks.",
+			],
+			summary=summary,
+			confidence=0.1,
+			evidence=[],
+		)
+
+	def _coerce_risk_level_none(self):
+		from ..domain import RiskLevel
+
+		return RiskLevel.NONE
 
